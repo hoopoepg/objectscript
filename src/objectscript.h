@@ -61,7 +61,7 @@ inline void operator delete(void *, void *){}
 #define OS_PLATFORM_BITS_VERSION
 #endif
 
-#define OS_VERSION		OS_TEXT("1.18-rc") OS_PLATFORM_BITS_VERSION
+#define OS_VERSION		OS_TEXT("1.18.2-rc") OS_PLATFORM_BITS_VERSION
 #define OS_COPYRIGHT	OS_TEXT("OS ") OS_VERSION OS_TEXT(" Copyright (C) 2012-2014 by Evgeniy Golovin")
 #define OS_OPENSOURCE	OS_TEXT("ObjectScript is free and open source: https://github.com/unitpoint/objectscript")
 
@@ -118,8 +118,13 @@ inline void operator delete(void *, void *){}
 
 #endif
 
+#ifdef OS_EMSCRIPTEN
+#define OS_INT	OS_INT32
+#define OS_UINT	OS_U32
+#else
 #define OS_INT	OS_INT64	// dependence on OS_NUMBER
 #define OS_UINT	OS_U64		// dependence on OS_NUMBER
+#endif
 
 #define OS_MEMCMP ::memcmp
 #define OS_MEMMOVE ::memmove
@@ -1037,6 +1042,7 @@ namespace ObjectScript
 
 					OS * allocator;
 					String filename;
+					bool is_real_file;
 					Vector<String> lines;
 
 					int ref_count;
@@ -1146,7 +1152,7 @@ namespace ObjectScript
 				bool getSettingSaveComment() const { return settings.save_comments; }
 				void setSettingSaveComment(bool value){ settings.save_comments = value; }
 
-				bool parseText(const OS_CHAR * text, int len, const String& filename, OS_ESourceCodeType source_code_type, bool check_utf8_bom);
+				bool parseText(const OS_CHAR * text, int len, const String& filename, bool is_real_file, OS_ESourceCodeType source_code_type, bool check_utf8_bom);
 
 				int getNumTokens() const { return tokens.count; }
 				TokenData * getToken(int i) const { return tokens[i]; }
@@ -2778,9 +2784,12 @@ namespace ObjectScript
 			#if 1 // speed optimization
 				StackValues& stack_values = this->stack_values;
 				if(stack_values.capacity < stack_values.count+1){
+					OS_NUMBER number = (OS_NUMBER)val;
 					reserveStackValues(stack_values.count+1);
+					stack_values.buf[stack_values.count++] = number;
+				}else{
+					stack_values.buf[stack_values.count++] = (OS_NUMBER)val;
 				}
-				stack_values.buf[stack_values.count++] = (OS_NUMBER)val;
 			#else
 				pushValue((OS_NUMBER)val);
 			#endif
@@ -2821,8 +2830,6 @@ namespace ObjectScript
 			void pop(int count = 1);
 			void moveStackValues(int offs, int count, int new_offs);
 			void moveStackValue(int offs, int new_offs);
-
-			int syncRetValues(int need_ret_values, int cur_ret_values);
 
 			void registerStringRef(GCStringValue*);
 			void unregisterStringRef(GCStringValue*);
@@ -3209,12 +3216,17 @@ namespace ObjectScript
 		int setSetting(OS_ESettings, int);
 
 		bool compileFile(const String& filename, bool required = false, OS_ESourceCodeType source_code_type = OS_SOURCECODE_AUTO, bool check_utf8_bom = true);
+		bool compileFakeFile(const String& filename, const String& str, OS_ESourceCodeType source_code_type = OS_SOURCECODE_AUTO, bool check_utf8_bom = true);
 		bool compile(const String& str, OS_ESourceCodeType source_code_type = OS_SOURCECODE_AUTO, bool check_utf8_bom = true);
 		bool compile(OS_ESourceCodeType source_code_type = OS_SOURCECODE_AUTO, bool check_utf8_bom = true);
 
 		void call(int params = 0, int ret_values = 0, OS_ECallType call_type = OS_CALLTYPE_AUTO);
+		
 		void eval(const OS_CHAR * str, int params = 0, int ret_values = 0, OS_ESourceCodeType source_code_type = OS_SOURCECODE_AUTO, bool check_utf8_bom = true, bool handle_exception = true);
 		void eval(const String& str, int params = 0, int ret_values = 0, OS_ESourceCodeType source_code_type = OS_SOURCECODE_AUTO, bool check_utf8_bom = true, bool handle_exception = true);
+
+		void evalFakeFile(const OS_CHAR * filename, const OS_CHAR * str, int params = 0, int ret_values = 0, OS_ESourceCodeType source_code_type = OS_SOURCECODE_AUTO, bool check_utf8_bom = true, bool handle_exception = true);
+		void evalFakeFile(const String& filename, const String& str, int params = 0, int ret_values = 0, OS_ESourceCodeType source_code_type = OS_SOURCECODE_AUTO, bool check_utf8_bom = true, bool handle_exception = true);
 
 		void evalProtected(const OS_CHAR * str, int params = 0, int ret_values = 0, OS_ESourceCodeType source_code_type = OS_SOURCECODE_AUTO, bool check_utf8_bom = true, bool handle_exception = true);
 

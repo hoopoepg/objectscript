@@ -17,6 +17,16 @@
 #include <pthread.h>
 #endif
 
+#ifdef OS_EMSCRIPTEN
+
+#include <emscripten.h>
+#include "ext-url/os-url.h"
+#include "ext-base64/os-base64.h"
+#include "ext-json/os-json.h"
+#include "ext-datetime/os-datetime.h"
+
+#else // #ifdef OS_EMSCRIPTEN
+
 #include "ext-process/os-process.h"
 #include "ext-filesystem/os-filesystem.h"
 #include "ext-hashlib/os-hashlib.h"
@@ -48,6 +58,8 @@
 #ifndef OS_ZLIB_DISABLED
 #include "ext-zlib/os-zlib.h"
 #endif
+
+#endif // #if !defined OS_EMSCRIPTEN
 
 #ifdef _MSC_VER
 #ifndef IW_SDK
@@ -136,6 +148,17 @@ protected:
 			// setGCStartUsedBytes(32 * 1024 * 1024);
 			cache_path = new (malloc(sizeof(Core::String) OS_DBG_FILEPOS)) Core::String(this, init_cache_path);
 
+#ifdef OS_EMSCRIPTEN
+
+			initEmscriptenExtension();
+
+			initUrlExtension(this);
+			initBase64Extension(this);
+			initDateTimeExtension(this);
+			initJsonExtension(this);
+
+#else // #ifdef OS_EMSCRIPTEN
+
 			initProcessExtension(this);
 			initFileSystemExtension(this);
 			initHashExtension(this);
@@ -167,6 +190,8 @@ protected:
 #ifndef OS_ZLIB_DISABLED
 			initZlibExtension(this);
 #endif
+
+#endif // #ifndef OS_EMSCRIPTEN
 			return true;
 		}
 		return false;
@@ -315,6 +340,42 @@ public:
 		setFuncs(funcs);
 		pop();
 	}
+
+#ifdef OS_EMSCRIPTEN
+
+	static int runJSStringResult(OS * os, int params, int, int, void*)
+	{
+		if(params > 0){
+			char * ret = emscripten_run_script_string(os->toString(-params+0).toChar());
+			os->pushString(ret);
+			return 1;
+		}
+		return 0;
+	}
+
+	static int runJSIntResult(OS * os, int params, int, int, void*)
+	{
+		if(params > 0){
+			int ret = emscripten_run_script_int(os->toString(-params+0).toChar());
+			os->pushNumber(ret);
+			return 1;
+		}
+		return 0;
+	}
+
+	void initEmscriptenExtension()
+	{
+		FuncDef funcs[] = {
+			{"runJSIntResult", ConsoleOS::runJSIntResult},
+			{"runJSStringResult", ConsoleOS::runJSStringResult},
+			{}
+		};
+		pushGlobals();
+		setFuncs(funcs);
+		pop();
+	}
+
+#endif // #ifdef OS_EMSCRIPTEN
 
 	void printUsage(char ** argv, const char *badoption)
 	{
@@ -606,6 +667,12 @@ public:
 		}
 	}
 
+#ifdef OS_EMSCRIPTEN
+	void initEmscripten()
+	{
+	}
+#endif // #ifdef OS_EMSCRIPTEN
+
 	void processRequest(int argc, char * argv[])
 	{
 		if(argc == 1){
@@ -720,6 +787,55 @@ void log(const char * msg)
 	}
 }
 
+#ifdef OS_EMSCRIPTEN
+
+extern "C" {
+
+static ConsoleOS * os = NULL;
+
+int main()
+{
+	emscripten_exit_with_live_runtime();
+	return 0;
+}
+
+void OS_create()
+{
+	if(os){
+		// TODO: release??
+		return;
+	}
+	os = OS::create(new ConsoleOS());
+}
+
+void OS_eval(const char * text)
+{
+	if(!os){
+		OS_create();
+	}
+	os->eval(text);
+}
+
+void OS_evalFakeFile(const char * filename, const char * text)
+{
+	if(!os){
+		OS_create();
+	}
+	os->evalFakeFile(filename, text);
+}
+
+void OS_release()
+{
+	if(os){
+		os->release();
+		os = NULL;
+	}
+}
+
+} // extern "C"
+
+#else // #ifdef OS_EMSCRIPTEN
+
 #ifdef _MSC_VER
 int _tmain(int argc, _TCHAR* _argv[])
 {
@@ -755,9 +871,11 @@ int main(int argc, char * argv[])
 #else
 	ConsoleOS * os = OS::create(new ConsoleOS(), new OSMemoryManagerOld());
 #endif
+	// os->eval("print json.decode(json.encode({a=2, 10=\"qwerty\"}))");
 	os->processRequest(argc, argv);
     os->release();
 
 	return 0;
 }
 
+#endif // #ifndef OS_EMSCRIPTEN

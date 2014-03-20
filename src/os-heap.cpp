@@ -166,9 +166,9 @@ void * OSHeapManager::allocSmall(OS_U32 size OS_DBG_FILEPOS_DECL)
 				small_block->size_slot = (OS_BYTE)i;
 
 #ifdef OS_DEBUG
-				OS_BYTE * p = (OS_BYTE*)(small_block + 1);
+				OS_BYTE * p = (OS_BYTE*)(OS_STRUCT_OFFS(small_block, 1));
 				*(int*)p = DUMMY_SMALL_FREE_ID_PRE;
-				*(int*)(p + small_block->getDataSize() + sizeof(int)) = DUMMY_SMALL_FREE_ID_POST;
+				*(int*)(p + small_block->getDataSize() + OS_SIZEOF_INT) = DUMMY_SMALL_FREE_ID_POST;
 #endif
 
 				((FreeSmallBlock*)small_block)->next = free_small_blocks[i];
@@ -180,7 +180,7 @@ void * OSHeapManager::allocSmall(OS_U32 size OS_DBG_FILEPOS_DECL)
 			}
 			new_small_page->size = small_page_size;
 
-			small_page_offs = sizeof(*new_small_page);
+			small_page_offs = OS_HEAP_SIZE_ALIGN(sizeof(*new_small_page));
 			small_stats.alloc_size += new_small_page->size;
 
 			new_small_page->next = small_page;
@@ -188,7 +188,7 @@ void * OSHeapManager::allocSmall(OS_U32 size OS_DBG_FILEPOS_DECL)
 		}else{
 			small_stats.hit_count++;
 		}
-		OS_ASSERT("Heap corrupted!" && (small_page_offs & 3) == 0);
+		OS_ASSERT("Heap corrupted!" && (small_page_offs & (ALIGN-1)) == 0);
 		small_block = (SmallBlock*)(((OS_BYTE*)small_page) + small_page_offs);
 		small_page_offs += size;
 	}
@@ -198,11 +198,12 @@ void * OSHeapManager::allocSmall(OS_U32 size OS_DBG_FILEPOS_DECL)
 	small_block->filename = dbg_filename;
 	small_block->line = dbg_line;
 	small_block->insertBefore(dummy_small_block.next);
+	small_block->id = cur_id;
 #endif
 	OS_U32 data_size = small_block->getDataSize();
 	small_stats.registerAlloc(small_block->getSize(), data_size);
 
-	OS_BYTE * p = (OS_BYTE*)(small_block + 1);
+	OS_BYTE * p = OS_STRUCT_OFFS(small_block, 1);
 #ifndef OS_USE_HEAP_SAVING_MODE
 	p[-1] = BT_SMALL;
 #else
@@ -211,10 +212,11 @@ void * OSHeapManager::allocSmall(OS_U32 size OS_DBG_FILEPOS_DECL)
 
 #ifdef OS_DEBUG
 	*(int*)p = DUMMY_SMALL_USED_ID_PRE;
-	p += sizeof(int);
+	p += OS_SIZEOF_INT;
 	*(int*)(p + data_size) = DUMMY_SMALL_USED_ID_POST;
 #endif
 
+	OS_ASSERT("Heap align corrupted!" && ((int)(intptr_t)(p) % ALIGN) == 0);
 	OS_MEMSET(p, 0, data_size);
 
 #if defined(OS_DEBUG)
@@ -229,18 +231,18 @@ void OSHeapManager::freeSmall(void * p)
 	OS_ASSERT("Trying to free NULL pointer" && p);
 	OS_ASSERT("Heap corrupted!" && small_stats.alloc_count > small_stats.free_count);
 #ifdef OS_DEBUG
-	p = (OS_BYTE*)p - sizeof(int);
+	p = (OS_BYTE*)p - OS_SIZEOF_INT;
 	OS_ASSERT("Heap corrupted or trying to free alien memory" && *(int*)p == DUMMY_SMALL_USED_ID_PRE);
 	*(int*)p = DUMMY_SMALL_FREE_ID_PRE;
 #endif
 
-	SmallBlock * small_block = ((SmallBlock*)p) - 1;
+	SmallBlock * small_block = (SmallBlock*)OS_STRUCT_OFFS((SmallBlock*)p, -1);
 	OS_U32 i = small_block->size_slot;
 	OS_ASSERT("Heap corrupted!" && i < SMALL_SLOT_COUNT);
 
 #ifdef OS_DEBUG
 	{
-		int * check_p = (int*)((OS_BYTE*)p + small_block->getDataSize() + sizeof(int));
+		int * check_p = (int*)((OS_BYTE*)p + small_block->getDataSize() + OS_SIZEOF_INT);
 		OS_ASSERT("Heap corrupted!" && *check_p == DUMMY_SMALL_USED_ID_POST);
 		*check_p = DUMMY_SMALL_FREE_ID_POST;
 		// OS_MEMSET((int*)p+1, DEAD_BYTE, small_block->getDataSize());
@@ -264,14 +266,14 @@ OS_U32 OSHeapManager::getSizeSmall(void * p)
 	OS_ASSERT("Trying to size NULL pointer" && p);
 
 #ifdef OS_DEBUG
-	p = (OS_BYTE*)p - sizeof(int);
+	p = (OS_BYTE*)p - OS_SIZEOF_INT;
 	OS_ASSERT("Heap corrupted!" && *(int*)p == DUMMY_SMALL_USED_ID_PRE);
 #endif
 
-	SmallBlock * small_block = ((SmallBlock*)p) - 1;
+	SmallBlock * small_block = (SmallBlock*)OS_STRUCT_OFFS((SmallBlock*)p, -1);
 
 #ifdef OS_DEBUG
-	OS_ASSERT("Heap corrupted!" && *(int*)((OS_BYTE*)p + small_block->getDataSize() + sizeof(int)) == DUMMY_SMALL_USED_ID_POST);
+	OS_ASSERT("Heap corrupted!" && *(int*)((OS_BYTE*)p + small_block->getDataSize() + OS_SIZEOF_INT) == DUMMY_SMALL_USED_ID_POST);
 #endif
 
 	return small_block->getDataSize();
@@ -279,7 +281,7 @@ OS_U32 OSHeapManager::getSizeSmall(void * p)
 
 inline OS_U32 OSHeapManager::Block::getDataSize() const
 {
-	OS_ASSERT("Heap corrupted!" && ((size - sizeof(Block) - OS_DUMMY_ID_SIZE) & 3) == 0);
+	OS_ASSERT("Heap corrupted!" && ((size - sizeof(Block) - OS_DUMMY_ID_SIZE) & (ALIGN-1)) == 0);
 	return size - sizeof(Block) - OS_DUMMY_ID_SIZE;
 }
 
@@ -359,6 +361,7 @@ void * OSHeapManager::allocMedium(OS_U32 size OS_DBG_FILEPOS_DECL)
 #ifdef OS_DEBUG
 		block->filename = dbg_filename;
 		block->line = dbg_line;
+		block->id = cur_id;
 #endif
 		block->page = next_page++;
 		block->size = page_size;
@@ -382,44 +385,47 @@ void * OSHeapManager::allocMedium(OS_U32 size OS_DBG_FILEPOS_DECL)
 #ifdef OS_DEBUG
 		block->filename = dbg_filename;
 		block->line = dbg_line;
+		block->id = cur_id;
 #endif
 		block->size += size;
 		((FreeBlock*)block)->removeFreeLink();
 	}else{
 #ifdef OS_DEBUG
-		*(int*)(block+1) = DUMMY_MEDIUM_FREE_ID_PRE;
-		*(int*)((OS_BYTE*)(block+1) + block->getDataSize() + sizeof(int)) = DUMMY_MEDIUM_FREE_ID_POST;
+		*(int*)(OS_STRUCT_OFFS(block, 1)) = DUMMY_MEDIUM_FREE_ID_PRE;
+		*(int*)((OS_BYTE*)(OS_STRUCT_OFFS(block, 1)) + block->getDataSize() + OS_SIZEOF_INT) = DUMMY_MEDIUM_FREE_ID_POST;
 #endif
 
 		if(block->size < ((FreeBlock*)block)->next_free->size){
 			((FreeBlock*)block)->removeFreeLink();
 			insertFreeBlock((FreeBlock*)block);
 		}
-		OS_ASSERT("Heap corrupted!" && (block->size & 3) == 0);
-		Block * newBlock = (Block*)(((OS_BYTE*)block) + block->size);
+		OS_ASSERT("Heap corrupted!" && (block->size & (ALIGN-1)) == 0);
+		Block * new_block = (Block*)(((OS_BYTE*)block) + block->size);
 #ifdef OS_DEBUG
-		newBlock->filename = dbg_filename;
-		newBlock->line = dbg_line;
+		new_block->filename = dbg_filename;
+		new_block->line = dbg_line;
+		new_block->id = cur_id;
 #endif
-		newBlock->page = block->page;
-		newBlock->size = size;
-		newBlock->insertAfter(block);    
-		block = newBlock;
+		new_block->page = block->page;
+		new_block->size = size;
+		new_block->insertAfter(block);    
+		block = new_block;
 	}
 	block->is_free = false;
 
 	OS_U32 data_size = block->getDataSize();
 	medium_stats.registerAlloc(block->size, data_size);
 
-	OS_BYTE * p = (OS_BYTE*)(block+1);
+	OS_BYTE * p = OS_STRUCT_OFFS(block, 1);
 	p[-1] = BT_MEDIUM;
 
 #ifdef OS_DEBUG
 	*(int*)p = DUMMY_MEDIUM_USED_ID_PRE;
-	p += sizeof(int);
+	p += OS_SIZEOF_INT;
 	*(int*)(p + data_size) = DUMMY_MEDIUM_USED_ID_POST;
 #endif
 
+	OS_ASSERT("Heap align corrupted!" && ((int)(intptr_t)(p) % ALIGN) == 0);
 	OS_MEMSET(p, 0, data_size);
 
 #if defined(OS_DEBUG)
@@ -435,17 +441,17 @@ void OSHeapManager::freeMedium(void * p)
 	OS_ASSERT("Heap corrupted!" && medium_stats.alloc_count > medium_stats.free_count);
 
 #ifdef OS_DEBUG
-	p = (OS_BYTE*)p - sizeof(int);
+	p = (OS_BYTE*)p - OS_SIZEOF_INT;
 	OS_ASSERT("Heap corrupted!" && *(int*)p == DUMMY_MEDIUM_USED_ID_PRE);
 	// *(int*)p = DUMMY_MEDIUM_FREE_ID_PRE;
 #endif
 
-	Block * block = ((Block*)p) - 1;
+	Block * block = (Block*)OS_STRUCT_OFFS((Block*)p, -1);
 	OS_ASSERT("Double deallocation!" && !block->is_free);
 
 #ifdef OS_DEBUG
 	{
-		OS_ASSERT("Heap corrupted!" && *((int*)((OS_BYTE*)p + block->getDataSize() + sizeof(int)))	== DUMMY_MEDIUM_USED_ID_POST);
+		OS_ASSERT("Heap corrupted!" && *((int*)((OS_BYTE*)p + block->getDataSize() + OS_SIZEOF_INT))	== DUMMY_MEDIUM_USED_ID_POST);
 		// *check_p = DUMMY_MEDIUM_FREE_ID_POST;
 	}
 #endif
@@ -477,8 +483,8 @@ void OSHeapManager::freeMedium(void * p)
 	block->is_free = true;
 
 #ifdef OS_DEBUG
-	*(int*)(block+1) = DUMMY_MEDIUM_FREE_ID_PRE;
-	*(int*)((OS_BYTE*)(block+1) + block->getDataSize() + sizeof(int)) = DUMMY_MEDIUM_FREE_ID_POST;
+	*(int*)(OS_STRUCT_OFFS(block, 1)) = DUMMY_MEDIUM_FREE_ID_PRE;
+	*(int*)((OS_BYTE*)(OS_STRUCT_OFFS(block, 1)) + block->getDataSize() + OS_SIZEOF_INT) = DUMMY_MEDIUM_FREE_ID_POST;
 	// OS_MEMSET((int*)p+1, DEAD_BYTE, block->getDataSize());
 #endif
 
@@ -494,14 +500,14 @@ OS_U32 OSHeapManager::getSizeMedium(void * p)
 	OS_ASSERT("Trying to size NULL pointer" && p);
 
 #ifdef OS_DEBUG
-	p = (OS_BYTE*)p - sizeof(int);
+	p = (OS_BYTE*)p - OS_SIZEOF_INT;
 	OS_ASSERT("Heap corrupted!" && *(int*)p == DUMMY_MEDIUM_USED_ID_PRE);
 #endif
 
-	Block * block = ((Block*)p) - 1;
+	Block * block = (Block*)OS_STRUCT_OFFS((Block*)p, -1);
 
 #ifdef OS_DEBUG
-	OS_ASSERT("Heap corrupted!" && *(int*)((OS_BYTE*)p + block->getDataSize() + sizeof(int)) == DUMMY_MEDIUM_USED_ID_POST);
+	OS_ASSERT("Heap corrupted!" && *(int*)((OS_BYTE*)p + block->getDataSize() + OS_SIZEOF_INT) == DUMMY_MEDIUM_USED_ID_POST);
 #endif
 
 	return block->getDataSize();
@@ -554,6 +560,7 @@ void * OSHeapManager::allocLarge(OS_U32 size OS_DBG_FILEPOS_DECL)
 #ifdef OS_DEBUG
 	block->filename = dbg_filename;
 	block->line = dbg_line;
+	block->id = cur_id;
 #endif
 	block->page = (OS_U16)-1;
 	block->size = size;
@@ -565,7 +572,7 @@ void * OSHeapManager::allocLarge(OS_U32 size OS_DBG_FILEPOS_DECL)
 	OS_U32 data_size = block->getDataSize();
 	large_stats.registerAlloc(block->size, data_size);
 
-	OS_BYTE * p = (OS_BYTE*)(block + 1);
+	OS_BYTE * p = OS_STRUCT_OFFS(block, 1);
 #ifndef OS_USE_HEAP_SAVING_MODE
 	p[-1] = BT_LARGE;
 #else
@@ -574,10 +581,11 @@ void * OSHeapManager::allocLarge(OS_U32 size OS_DBG_FILEPOS_DECL)
 
 #ifdef OS_DEBUG
 	*(int*)p = DUMMY_LARGE_USED_ID_PRE;
-	p += sizeof(int);
+	p += OS_SIZEOF_INT;
 	*(int*)(p + data_size) = DUMMY_LARGE_USED_ID_POST;
 #endif
 
+	OS_ASSERT("Heap align corrupted!" && ((int)(intptr_t)(p) % ALIGN) == 0);
 	OS_MEMSET(p, 0, data_size);
 
 #if defined(OS_DEBUG)
@@ -592,17 +600,17 @@ void OSHeapManager::freeLarge(void * p)
 	OS_ASSERT("Trying to free NULL pointer" && p);
 	OS_ASSERT("Heap corrupted!"	&& large_stats.alloc_count > large_stats.free_count);
 #ifdef OS_DEBUG
-	p = (OS_BYTE*)p - sizeof(int);
+	p = (OS_BYTE*)p - OS_SIZEOF_INT;
 	OS_ASSERT("Heap corrupted!" && *(int*)p == DUMMY_LARGE_USED_ID_PRE);
 	*(int*)p = DUMMY_LARGE_FREE_ID_PRE;
 #endif
 
-	Block * block = ((Block*)p) - 1;
+	Block * block = (Block*)OS_STRUCT_OFFS((Block*)p, -1);
 	OS_ASSERT("Double deallocation!" && !block->is_free);
 
 #ifdef OS_DEBUG
 	{
-		int * check_p = (int*)((OS_BYTE*)p + block->getDataSize() + sizeof(int));
+		int * check_p = (int*)((OS_BYTE*)p + block->getDataSize() + OS_SIZEOF_INT);
 		OS_ASSERT("Heap corrupted!" && *check_p == DUMMY_LARGE_USED_ID_POST);
 		*check_p = DUMMY_LARGE_FREE_ID_POST;
 		// OS_MEMSET((int*)p+1, DEAD_BYTE, block->getDataSize());
@@ -624,14 +632,14 @@ OS_U32 OSHeapManager::getSizeLarge(void * p)
 	OS_ASSERT("Trying to size NULL pointer" && p);
 
 #ifdef OS_DEBUG
-	p = (OS_BYTE*)p - sizeof(int);
+	p = (OS_BYTE*)p - OS_SIZEOF_INT;
 	OS_ASSERT("Heap corrupted!" && *(int*)p == DUMMY_LARGE_USED_ID_PRE);
 #endif
 
-	Block * block = ((Block*)p) - 1;
+	Block * block = (Block*)OS_STRUCT_OFFS((Block*)p, -1);
 
 #ifdef OS_DEBUG
-	OS_ASSERT("Heap corrupted!" && *(int*)((OS_BYTE*)p + block->getDataSize() + sizeof(int)) == DUMMY_LARGE_USED_ID_POST);
+	OS_ASSERT("Heap corrupted!" && *(int*)((OS_BYTE*)p + block->getDataSize() + OS_SIZEOF_INT) == DUMMY_LARGE_USED_ID_POST);
 #endif
 
 	return block->getDataSize();
@@ -662,6 +670,7 @@ OSHeapManager::OSHeapManager()
 	dummy_small_block.size_slot = 0;
 	dummy_small_block.filename = "#dummy#";
 	dummy_small_block.line = 0;
+	cur_id = 0;
 #endif
 
 #ifndef OS_USE_HEAP_SAVING_MODE
@@ -759,7 +768,7 @@ OSHeapManager::~OSHeapManager()
 		for(Block * block = dummy_block.next, * next; block != &dummy_block; block = next){
 			next = block->next;
 			if(!block->is_free){
-				void * p = (char*)(block+1) + OS_DUMMY_ID_SIZE/2;
+				void * p = OS_STRUCT_OFFS(block, 1) + OS_DUMMY_ID_SIZE/2;
 				free(p);
 			}
 		}
@@ -778,14 +787,22 @@ OSHeapManager::~OSHeapManager()
 
 void * OSHeapManager::malloc(int size OS_DBG_FILEPOS_DECL)
 {
+#ifdef OS_DEBUG
+	cur_id++;
+	/* if(cur_id == 1362){
+		int i = 0;
+	} */
+#endif
 	if(size <= 0){
 		return NULL;
 	}
 
 #ifndef USE_STD_MALLOC
+#ifndef OS_EMSCRIPTEN // allocSmall doesn't work in emscripten because of heap align error
 	if(!(size & ~(MAX_SMALL_SIZE - 1))){
 		return allocSmall(size OS_DBG_FILEPOS_PARAM);
 	}
+#endif
 
 #if defined(OS_DEBUG)
 	// checkMemory();
@@ -967,13 +984,13 @@ void OSHeapManager::checkMemory()
 		OS_ASSERT("Heap corrupted!" && small_block->prev->next == small_block);
 
 		OS_U32 block_data_size = small_block->getDataSize();
-		OS_ASSERT("Heap corrupted!" && (block_data_size & 3) == 0);
+		OS_ASSERT("Heap corrupted!" && (block_data_size & (ALIGN-1)) == 0);
 		OS_ASSERT("Heap corrupted!" && block_data_size <= MAX_SMALL_SIZE);
 		OS_ASSERT("Heap corrupted!" && block_data_size >= small_stats.min_block_data_size);
 		OS_ASSERT("Heap corrupted!" && block_data_size <= small_stats.max_block_data_size);
 
-		OS_ASSERT("Heap corrupted!" && *(int *)(small_block + 1) == DUMMY_SMALL_USED_ID_PRE);
-		OS_ASSERT("Heap corrupted!" && *(int *)((OS_BYTE *)(small_block + 1) + block_data_size + sizeof(int)) == DUMMY_SMALL_USED_ID_POST);
+		OS_ASSERT("Heap corrupted!" && *(int *)(OS_STRUCT_OFFS(small_block, 1)) == DUMMY_SMALL_USED_ID_PRE);
+		OS_ASSERT("Heap corrupted!" && *(int *)((OS_BYTE *)(OS_STRUCT_OFFS(small_block, 1)) + block_data_size + OS_SIZEOF_INT) == DUMMY_SMALL_USED_ID_POST);
 
 		used_size += small_block->getSize();
 		data_size += block_data_size;
@@ -986,10 +1003,10 @@ void OSHeapManager::checkMemory()
 			free_small_block; free_small_block = free_small_block->next)
 		{
 			SmallBlock * small_block = (SmallBlock*)free_small_block;
-			OS_ASSERT("Heap corrupted!" && (small_block->getDataSize() & 3) == 0);
+			OS_ASSERT("Heap corrupted!" && (small_block->getDataSize() & (ALIGN-1)) == 0);
 			OS_ASSERT("Heap corrupted!" && small_block->size_slot == (OS_BYTE)i);
-			OS_ASSERT("Heap corrupted!" && *(int *)(small_block + 1) == DUMMY_SMALL_FREE_ID_PRE);
-			OS_ASSERT("Heap corrupted!" && *(int *)((OS_BYTE *)(small_block + 1) + small_block->getDataSize() + sizeof(int)) == DUMMY_SMALL_FREE_ID_POST);
+			OS_ASSERT("Heap corrupted!" && *(int *)(OS_STRUCT_OFFS(small_block, 1)) == DUMMY_SMALL_FREE_ID_PRE);
+			OS_ASSERT("Heap corrupted!" && *(int *)((OS_BYTE *)(OS_STRUCT_OFFS(small_block, 1)) + small_block->getDataSize() + OS_SIZEOF_INT) == DUMMY_SMALL_FREE_ID_POST);
 		}
 	}
 
@@ -1005,19 +1022,19 @@ void OSHeapManager::checkMemory()
 		OS_ASSERT("Heap corrupted!" && block->prev->next == block);
 
 		OS_U32 block_data_size = block->getDataSize();
-		OS_ASSERT("Heap corrupted!" && (block_data_size & 3) == 0);
+		OS_ASSERT("Heap corrupted!" && (block_data_size & (ALIGN-1)) == 0);
 		if(!block->is_free){
 			OS_ASSERT("Heap corrupted!" && block_data_size >=	medium_stats.min_block_data_size);
 			OS_ASSERT("Heap corrupted!" && block_data_size <=	medium_stats.max_block_data_size);
-			OS_ASSERT("Heap corrupted!" && *(int *)(block + 1) == DUMMY_MEDIUM_USED_ID_PRE);
-			OS_ASSERT("Heap corrupted!" && *(int *)((OS_BYTE *)(block + 1) + block_data_size + sizeof(int)) == DUMMY_MEDIUM_USED_ID_POST);
+			OS_ASSERT("Heap corrupted!" && *(int *)(OS_STRUCT_OFFS(block, 1)) == DUMMY_MEDIUM_USED_ID_PRE);
+			OS_ASSERT("Heap corrupted!" && *(int *)((OS_BYTE *)(OS_STRUCT_OFFS(block, 1)) + block_data_size + OS_SIZEOF_INT) == DUMMY_MEDIUM_USED_ID_POST);
 
 			used_size += block->size;
 			data_size += block_data_size;
 		}else{
 			// OS_ASSERT("Heap corrupted!" && data_size < page_size);
-			OS_ASSERT("Heap corrupted!" && *(int *)(block + 1) == DUMMY_MEDIUM_FREE_ID_PRE);
-			OS_ASSERT("Heap corrupted!" && *(int *)((OS_BYTE *)(block + 1) + block_data_size + sizeof(int)) == DUMMY_MEDIUM_FREE_ID_POST);
+			OS_ASSERT("Heap corrupted!" && *(int *)(OS_STRUCT_OFFS(block, 1)) == DUMMY_MEDIUM_FREE_ID_PRE);
+			OS_ASSERT("Heap corrupted!" && *(int *)((OS_BYTE *)(OS_STRUCT_OFFS(block, 1)) + block_data_size + OS_SIZEOF_INT) == DUMMY_MEDIUM_FREE_ID_POST);
 		}
 		alloc_size += block->size;
 	}
@@ -1155,14 +1172,22 @@ void OSHeapManager::writeStats(OS * os, OS::FileHandle * f)
 void OSHeapManager::writeSmallBlockHeader(OS * os, OS::FileHandle * f)
 {
 	char buf[256];
+#ifdef OS_DEBUG
+	OS_SNPRINTF(buf, sizeof(buf)-1, "== BLOCKS TYPE: %s ===============================================================\nSIZE\tID\tLINE\tFILENAME\n", mem_block_type_names[0]);
+#else
 	OS_SNPRINTF(buf, sizeof(buf)-1, "== BLOCKS TYPE: %s ===============================================================\nSIZE\tLINE\tFILENAME\n", mem_block_type_names[0]);
+#endif
 	writeFile(os, f, buf);
 }
 
 void OSHeapManager::writeSmallBlock(OS * os, OS::FileHandle * f, SmallBlock * block)
 {
 	char buf[256];
+#ifdef OS_DEBUG
+	OS_SNPRINTF(buf, sizeof(buf)-1, "%d\t%d\t%d\t%s\n", block->getDataSize(), block->id, block->line, block->filename);
+#else
 	OS_SNPRINTF(buf, sizeof(buf)-1, "%d\t%d\t%s\n", block->getDataSize(), block->line, block->filename);
+#endif
 	writeFile(os, f, buf);
 }
 
@@ -1182,7 +1207,7 @@ void OSHeapManager::writeBlockHeader(OS * os, OS::FileHandle * f, int type)
 {
 	char buf[256];
 #ifdef OS_DEBUG
-	OS_SNPRINTF(buf, sizeof(buf)-1, "== BLOCKS TYPE: %s ===============================================================\nSIZE\tPAGE\tLINE\tFILENAME\n", mem_block_type_names[type]);
+	OS_SNPRINTF(buf, sizeof(buf)-1, "== BLOCKS TYPE: %s ===============================================================\nSIZE\tID\tPAGE\tLINE\tFILENAME\n", mem_block_type_names[type]);
 #else
 	OS_SNPRINTF(buf, sizeof(buf)-1, "== BLOCKS TYPE: %s ===============================================================\nSIZE\tPAGE\n", mem_block_type_names[type]);
 #endif
@@ -1193,7 +1218,7 @@ void OSHeapManager::writeBlock(OS * os, OS::FileHandle * f, Block * block)
 {
 	char buf[256];
 #ifdef OS_DEBUG
-	OS_SNPRINTF(buf, sizeof(buf)-1, "%d\t%d\t%d\t%s\n", block->getDataSize(), block->page, block->line, block->filename);
+	OS_SNPRINTF(buf, sizeof(buf)-1, "%d\t%d\t%d\t%d\t%s\n", block->getDataSize(), block->id, block->page, block->line, block->filename);
 #else
 	OS_SNPRINTF(buf, sizeof(buf)-1, "%d\t%d\n", block->getDataSize(), block->page);
 #endif
