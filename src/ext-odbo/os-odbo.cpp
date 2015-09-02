@@ -1,10 +1,25 @@
+#ifndef WIN32
+#include "os.config.h"
+#endif
 #include "os-odbo.h"
 #include "../objectscript.h"
 #include "../os-binder.h"
 
-#include <soci.h>
-#include <soci-mysql.h>
-#include <soci-simple.h>
+#include <soci/soci.h>
+
+#ifdef WIN32
+#include <soci/mysql/soci-mysql.h>
+#include <soci/odbc/soci-odbc.h>
+#else
+#if defined(SOCI_MYSQL_FOUND) && SOCI_MYSQL_FOUND != 0
+#include <soci/mysql/soci-mysql.h>
+#endif
+#if defined(SOCI_ODBC_FOUND) && SOCI_ODBC_FOUND != 0
+#include <soci/odbc/soci-odbc.h>
+#endif
+#endif
+
+#include <soci/soci-simple.h>
 
 namespace ObjectScript {
 
@@ -17,7 +32,7 @@ public:
 		os->getGlobal(OS_TEXT("ODBOException"));
 		os->pushGlobals();
 		os->pushString(msg);
-		os->call(1, 1);
+		os->callFT(1, 1);
 		os->setException();
 	}
 
@@ -26,7 +41,7 @@ public:
 		os->getGlobal(OS_TEXT("ODBOException"));
 		os->pushGlobals();
 		os->pushString(msg);
-		os->call(1, 1);
+		os->callFT(1, 1);
 		os->setException();
 	}
 
@@ -45,11 +60,11 @@ public:
 			os = p_os;
 			handle = NULL;
 			list = NULL;
-			
+
 			/* os->getGlobal("ODBODateTime");
 			dateTimeId[0] = os->getValueId();
 			os->pop(); */
-			
+
 			os->getGlobal("DateTime");
 			dateTimeId = os->getValueId();
 			os->pop();
@@ -124,28 +139,39 @@ public:
 			return isOpen();
 		}
 
+		bool open(const soci::connection_parameters& p)
+		{
+			close();
+			try {
+				handle = new soci::session(p);
+			}catch(std::exception& e){
+				triggerError(os, e.what()); // soci_session_error_message(handle));
+			}
+			return isOpen();
+		}
+
 		bool findStatement(ODBOStatement * stmt);
 		void addStatement(ODBOStatement * stmt);
 		void removeStatement(ODBOStatement * stmt);
 
 		ODBOStatement * prepare(const OS::Core::String& sql);
 
-		static bool isValidOption(const char * s, int len)
+		static bool isValidOption(const char * s, int len, bool odbc)
 		{
 			for(int i = 0; i < len; i++){
-				if(!s[i] || s[i] <= ' ' || s[i] == '='){
+				if(!s[i] || (odbc ? s[i] == ';' : s[i] <= ' ') || s[i] == '='){
 					return false;
 				}
 			}
 			return true;
 		}
 
-		static bool isValidOption(const OS::String& s)
+		static bool isValidOption(const OS::String& s, bool odbc)
 		{
-			return isValidOption(s, s.getLen());
+			return isValidOption(s, s.getLen(), odbc);
 		}
 
-		static int __construct(OS * os, int params, int, int, void * user_param)
+		static int __newinstance(OS * os, int params, int, int, void * user_param)
 		{
 			if(params < 1){
 				triggerError(os, OS_TEXT("driver parameter requied"));
@@ -153,9 +179,13 @@ public:
 			}
 			ODBO * self = new (os->malloc(sizeof(ODBO) OS_DBG_FILEPOS)) ODBO(os);
 			if(params >= 2 && os->isObject(-params+1)){
+				self->type = os->toString(-params+0);
+				bool odbc = self->type == "odbc";
+				bool odbc_driver_complete = false;
+
 				OS::Core::Buffer connection_str(os);
-				connection_str.append(self->type = os->toString(-params+0));
-				connection_str.append("://");
+				// connection_str.append(self->type = os->toString(-params+0));
+				// connection_str.append("://");
 				if(params > 2){
 					os->pop(params-2);
 				}
@@ -163,13 +193,13 @@ public:
 					OS::String key = os->toString(-2);
 					OS::String value = os->toString(-1);
 
-					if(!isValidOption(key) || !isValidOption(value)){
+					if(!isValidOption(key, odbc) || !isValidOption(value, odbc)){
 						triggerError(os, OS::String::format(os, "invalid char of option '%s=%s'", key.toChar(), value.toChar()));
 						self->close();
 						break;
 					}
 					if(i > 0){
-						connection_str.append(" ");
+						connection_str.append(odbc ? ";" : " ");
 					}
 					connection_str.append(key);
 					connection_str.append("=");
@@ -177,7 +207,20 @@ public:
 
 					os->pop(2);
 				}
-				self->open(connection_str.toString());
+				if(!os->isExceptionSet()){
+					try {
+						soci::connection_parameters parameters(self->type.toChar(), connection_str.toString().toChar());
+						if(odbc){
+#if defined(SOCI_ODBC_FOUND) && SOCI_ODBC_FOUND != 0
+							parameters.set_option(soci::odbc_option_driver_complete, odbc_driver_complete ? "1" : "0" /* SQL_DRIVER_NOPROMPT */);
+#endif
+						}
+						self->open(parameters);
+					}
+					catch (std::exception& e){
+						triggerError(os, e.what()); // soci_session_error_message(handle));
+					}
+				}
 			}else{
 				self->open(os->toString(-params+0));
 			}
@@ -288,20 +331,20 @@ public:
 		{
 			OS_ASSERT(owner);
 			OS * os = owner->os;
-			
+
 			os->pushValueById(owner->dateTimeId);
-			os->pushNull();
+			os->pushGlobals();
 			os->pushNumber(date.tm_year + 1900);
 			os->pushNumber(date.tm_mon + 1);
 			os->pushNumber(date.tm_mday);
 			os->pushNumber(date.tm_hour);
 			os->pushNumber(date.tm_min);
 			os->pushNumber(date.tm_sec);
-			os->call(6, 1);
+			os->callFT(6, 1);
 
 			/*
 			char value[32];
-			sprintf(value, "%04d %02d %02d %02d %02d %02d", date.tm_year + 1900, date.tm_mon + 1, 
+			sprintf(value, "%04d %02d %02d %02d %02d %02d", date.tm_year + 1900, date.tm_mon + 1,
 				date.tm_mday, date.tm_hour, date.tm_min, date.tm_sec);
 			os->pushString(value);
 			*/
@@ -330,10 +373,10 @@ public:
 
 		int step(EStepType type)
 		{
-			OS_ASSERT(owner && stmt);
+			OS_ASSERT(owner && (stmt || step_code == STEP_DONE));
 			OS * os = owner->os;
 			try{
-				if(step_code == STEP_DONE){
+				if(step_code == STEP_DONE || !stmt){
 					return 0;
 				}
 				if(step_code == STEP_OK){
@@ -345,6 +388,8 @@ public:
 					stmt->define_and_bind();
 					stmt->execute();
 					if(type == EXECUTE){
+						step_code = STEP_DONE;
+						close();
 						os->pushBool(true);
 						return 1;
 					}
@@ -390,7 +435,7 @@ public:
 							addColumn(name, row.get<std::string>(i));
 							break;
 
-						case soci::dt_date: 
+						case soci::dt_date:
 							addColumn(name, row.get<std::tm>(i));
 							break;
 
@@ -400,6 +445,10 @@ public:
 						}
 					}
 					return type == ITERATE ? 3 : 1;
+				}
+				if(step_code == STEP_DONE){
+					close();
+					return 0;
 				}
 				/* if(step_code != SQLITE_DONE){
 					checkError(step_code);
@@ -412,15 +461,16 @@ public:
 
 		int getColumnCount()
 		{
-			OS_ASSERT(owner && stmt);
-			// OS_ASSERT(false);
-			return row.size(); // sqlite3_column_count(stmt);
+			OS_ASSERT(owner);
+			return stmt ? row.size() : 0; // sqlite3_column_count(stmt);
 		}
 
 		int getColumnType(int col)
 		{
-			OS_ASSERT(owner && stmt);
-			// OS_ASSERT(false);
+			OS_ASSERT(owner);
+			if(!stmt){
+				return 0;
+			}
 			const soci::column_properties& props = row.get_properties(col);
 			return props.get_data_type(); // sqlite3_column_type(stmt, col);
 		}
@@ -428,11 +478,11 @@ public:
 		// int getParamIndex(const OS::String& name);
 		void bindParams();
 
-		static int __construct(OS * os, int params, int, int, void * user_param)
+		/* static int __construct(OS * os, int params, int, int, void * user_param)
 		{
 			triggerError(os, OS_TEXT("you should not create new instance of ODBOStatement"));
 			return 0;
-		}
+		} */
 
 		static int __iter(OS * os, int params, int, int, void * user_param);
 		static int bind(OS * os, int params, int, int, void * user_param);
@@ -472,7 +522,7 @@ template <> struct UserDataDestructor<ODBO_OS::ODBOStatement>
 
 bool ODBO_OS::ODBO::findStatement(ODBOStatement * stmt)
 {
-	OS_ASSERT(stmt->owner == this);
+	OS_ASSERT(stmt && stmt->owner == this);
 	for(ODBOStatement * cur = list; cur; cur = cur->next){
 		if(cur == stmt){
 			return true;
@@ -483,14 +533,14 @@ bool ODBO_OS::ODBO::findStatement(ODBOStatement * stmt)
 
 void ODBO_OS::ODBO::addStatement(ODBOStatement * stmt)
 {
-	OS_ASSERT(!stmt->next && !findStatement(stmt));
+	OS_ASSERT(stmt && !stmt->next && !findStatement(stmt));
 	stmt->next = list;
 	list = stmt;
 }
 
 void ODBO_OS::ODBO::removeStatement(ODBOStatement * stmt)
 {
-	OS_ASSERT(stmt->owner == this);
+	OS_ASSERT(stmt && stmt->owner == this);
 	for(ODBOStatement * cur = list, * prev = NULL; cur; prev = cur, cur = cur->next){
 		if(cur == stmt){
 			if(prev){
@@ -535,10 +585,14 @@ int ODBO_OS::ODBOStatement::getParamIndex(const OS::String& name)
 
 void ODBO_OS::ODBOStatement::bindParams()
 {
-	OS_ASSERT(owner && stmt);
+	OS_ASSERT(owner);
 	OS * os = owner->os;
 
 	if(os->isNull()){
+		return;
+	}
+	if(!stmt){
+		triggerError(os, OS_TEXT("statement closed"));
 		return;
 	}
 
@@ -790,12 +844,12 @@ int ODBO_OS::ODBO::getLastInsertId(OS * os, int params, int, int, void * user_pa
 
 	long value = -1;
 	if(self->type == "mysql"){
-		*self->handle << "select last_insert_id()", soci::into(value); 
+		*self->handle << "select last_insert_id()", soci::into(value);
 	}else if(self->type == "sqlite"){
-		*self->handle << "select last_insert_rowid()", soci::into(value); 
+		*self->handle << "select last_insert_rowid()", soci::into(value);
 	}else if(self->type == "mssql"){
 		std::string sequence_name = params > 0 ? os->toString(-params+0).toChar() : Lib::getTableName(self);
-		*self->handle << ("select ident_current('" + sequence_name + "')"), soci::into(value); 
+		*self->handle << ("select ident_current('" + sequence_name + "')"), soci::into(value);
 	}else{
 		std::string sequence_name = params > 0 ? os->toString(-params+0).toChar() : Lib::getTableName(self);
 		self->handle->get_last_insert_id(sequence_name, value);
@@ -829,10 +883,20 @@ int ODBO_OS::ODBO::query(OS * os, int params, int, int, void * user_param)
 
 void ODBO_OS::initExtension(OS* os)
 {
+#ifdef WIN32
 	soci::register_factory_mysql();
+	soci::register_factory_odbc();
+#else
+#if defined(SOCI_MYSQL_FOUND) && SOCI_MYSQL_FOUND != 0
+	soci::register_factory_mysql();
+#endif
+#if defined(SOCI_ODBC_FOUND) && SOCI_ODBC_FOUND != 0
+	soci::register_factory_odbc();
+#endif
+#endif
 	{
 		OS::FuncDef funcs[] = {
-			{OS_TEXT("__construct"), ODBO::__construct},
+			{OS_TEXT("__newinstance"), ODBO::__newinstance},
 			{OS_TEXT("query"), ODBO::query},
 			{OS_TEXT("__get@lastInsertId"), ODBO::getLastInsertId},
 			{OS_TEXT("getLastInsertId"), ODBO::getLastInsertId},
@@ -847,14 +911,14 @@ void ODBO_OS::initExtension(OS* os)
 	}
 	{
 		OS::FuncDef funcs[] = {
-			{OS_TEXT("__construct"), ODBOStatement::__construct},
+			// {OS_TEXT("__construct"), ODBOStatement::__construct},
 			{OS_TEXT("__iter"), ODBOStatement::__iter},
 			{OS_TEXT("bind"), ODBOStatement::bind},
 			{OS_TEXT("execute"), ODBOStatement::execute},
 			{OS_TEXT("fetch"), ODBOStatement::fetch},
 			{}
 		};
-		registerUserClass<ODBOStatement>(os, funcs);
+		registerUserClass<ODBOStatement>(os, funcs, NULL, false);
 	}
 #define OS_AUTO_TEXT(...) OS_TEXT(#__VA_ARGS__)
 	os->eval(OS_AUTO_TEXT(
